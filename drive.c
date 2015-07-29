@@ -51,6 +51,7 @@ either expressed or implied, of the FreeBSD Project.
 #define IMU_SAMPLE_RATE_HZ 200	// balancing filter and control loop speed
 #define DT 0.005       		// 1/sample_rate
 #define SERVO_HZ 50			// drive_stack frequency for driving around
+#define THETA_MIX_TC  2   // time constant on filter
 
 /************************************************************************
 * 	core_mode_t
@@ -134,13 +135,16 @@ typedef struct core_state_t{
 	// outputs to actuators
 	float servos[4];
 	float motors[4];
-	
 	// time when core_controller has finished a step
 	uint64_t time_us; 
 	// inner feedback loop to control theta body angle
-	float theta[3];
+	float theta_crab[3];
+	float theta_NU[3];	// theta estimation in NOSE_UP configuration
+	float theta_ND[3];	// theta estimation in NOSE_DOWN configuration
 	float theta_ref[3];
-	float current_theta;
+	float current_theta_crab;
+	float current_theta_NU;
+	float current_theta_ND;
 	float d_theta;
 	float eTheta[3];
 	// steering controller for gamma
@@ -158,6 +162,22 @@ typedef struct core_state_t{
 	orientation_t poss_orientation;
 	orientation_t orientation;
 } core_state_t;
+
+/************************************************************************
+* 	Variables for complementary filter.
+*	May create a new struct of comp_filter_t later.
+************************************************************************/
+// Complementary Filter for pitch angle theta about Y axis
+	const float HP_CONST = THETA_MIX_TC/(THETA_MIX_TC + DT);
+	const float LP_CONST = DT/(THETA_MIX_TC + DT);
+	int xAccel, zAccel, yGyroOffset;
+	float yGyro, accLP_ND, accLP_NU, gyroHP_ND, gyroHP_NU, theta_comp_ND, theta_comp_NU, theta_DMP;
+	unsigned short gyro_fsr; //full scale range of gyro
+	float gyro_to_rad_per_sec;
+	mpudata_t mpu; //struct to read IMU data into 
+	// Filter Initialization sampling
+	float sum_ax, sum_az, sum_gy;
+	int warmup_samples;
 
 
 
@@ -210,6 +230,8 @@ int disarm_controller();
 int arm_controller();
 int print_orientation(orientation_t orient);
 int print_arm_state(arm_state_t arm_state);
+int sample_imu();
+
 
 /************************************************************************
 * 	Global Variables				
@@ -255,7 +277,7 @@ int main(){
 	if(isatty(fileno(stdout))){
 		pthread_t  printf_thread;
 		pthread_create(&printf_thread, NULL, printf_loop, (void*) NULL);
-	}
+	} 
 	
 	 // start listening for RC control from dsm2 radio
 	if(config.enable_dsm2){
@@ -290,6 +312,22 @@ int main(){
 		blink_red();
 		return -1;
 	};
+	
+	// start the complementary filter
+	// read the gyro full-scale range
+	mpu_get_gyro_fsr(&gyro_fsr);
+	gyro_to_rad_per_sec = gyro_fsr*DEG_TO_RAD/32768;
+	
+	// now start initiating filter by sampling sensors for a second
+	set_imu_interrupt_func(&sample_imu);
+	sleep(1);
+	set_imu_interrupt_func(&null_func); //stop interrupt routine
+	yGyroOffset = sum_gy/warmup_samples;	// offset to correct for gyro bias
+    accLP_NU = atan2(sum_az, -sum_ax); 	// initialize accLP at current theta
+	accLP_ND = atan2(sum_az, sum_ax);
+	theta_comp_NU = accLP_NU;								// start theta based on accel
+	theta_comp_ND = accLP_ND;
+	//printf("yGyroOffset = %d\n", yGyroOffset);
 	
 	//start the interrupt handler this should be the last 
 	//step in initialization to make sure other setup functions don't interfere
@@ -458,25 +496,25 @@ void* drive_stack(void* ptr){
 				switch(cstate.poss_orientation){
 				case LEFT_DOWN:						//left side of the vehicle, not the cape
 					cstate.servos[0]=config.serv1_center+config.turn_crab;
-					cstate.servos[1]=config.serv2_center-config.turn_crab;
-					cstate.servos[2]=config.serv3_center+config.turn_crab;
+					cstate.servos[1]=config.serv2_center-config.turn_spin;
+					cstate.servos[2]=config.serv3_center+config.turn_spin;
 					cstate.servos[3]=config.serv4_center-config.turn_crab;
 					break;
 				case RIGHT_DOWN:
-					cstate.servos[0]=config.serv1_center+config.turn_crab;
+					cstate.servos[0]=config.serv1_center+config.turn_spin;
 					cstate.servos[1]=config.serv2_center-config.turn_crab;
 					cstate.servos[2]=config.serv3_center+config.turn_crab;
-					cstate.servos[3]=config.serv4_center-config.turn_crab;
+					cstate.servos[3]=config.serv4_center-config.turn_spin;
 					break;
 				case NOSE_DOWN:
 					cstate.servos[0]=config.serv1_center-config.turn_straight;
 					cstate.servos[1]=config.serv2_center+config.turn_straight;
-					cstate.servos[2]=config.serv3_center-config.turn_straight;
-					cstate.servos[3]=config.serv4_center+config.turn_straight;
+					cstate.servos[2]=config.serv3_center-config.turn_spin;
+					cstate.servos[3]=config.serv4_center+config.turn_spin;
 					break;
 				case NOSE_UP:
-					cstate.servos[0]=config.serv1_center-config.turn_straight;
-					cstate.servos[1]=config.serv2_center+config.turn_straight;
+					cstate.servos[0]=config.serv1_center-config.turn_spin;
+					cstate.servos[1]=config.serv2_center+config.turn_spin;
 					cstate.servos[2]=config.serv3_center-config.turn_straight;
 					cstate.servos[3]=config.serv4_center+config.turn_straight;
 					break;
@@ -532,7 +570,7 @@ int print_drive_mode(drive_mode_t mode){
 
 /************************************************************************
 * 	int print_arm_state(arm_state_t arm_state)
-*	prints a human readble version of the arm state
+*	prints a human readable version of the arm state
 ************************************************************************/
 int print_arm_state(arm_state_t arm_state){
 	switch(arm_state){
@@ -766,29 +804,79 @@ void* balance_stack(void* ptr){
 			}
 		
 		
-			if(user_interface.input_mode == NONE){
+			/* if(user_interface.input_mode == NONE){
 				// no user input, just keep the controller setpoint at zero
-				setpoint.theta = 1.57;		///////////made change here//////////////////////////////////////////
+				setpoint.theta = 0;		///////////made change here//////////////////////////////////////////
+				
 				setpoint.gamma = 0;		//leave in for future yaw control
 				setpoint.gamma_dot = 0;		//leave in for future yaw control
 				break;
-			}
+			} */
 			if(setpoint.core_mode == ANGLE){
 				// in angle mode, scale user input from -1 to 1 to
 				// the minimum and maximum theta reference angles
 				//setpoint.theta = 1.57 + config.theta_ref_max*(saturate_number_limit(&user_interface.drive_stick,1));
-				setpoint.theta = 1.57+ user_interface.drive_stick;
-				if(setpoint.theta >= 1.57 + config.theta_ref_max){
-					setpoint.theta = 1.57 + config.theta_ref_max;
-				}
-				if(setpoint.theta <= 1.57 - config.theta_ref_max){
-					setpoint.theta = 1.57 - config.theta_ref_max;
-				}
-				setpoint.gamma = user_interface.turn_stick;
-				setpoint.gamma_dot = cstate.d_gamma;
-				if(setpoint.gamma_dot >= config.max_turn_rate){
-					setpoint.gamma_dot = config.max_turn_rate;
-				}	
+				switch(cstate.poss_orientation){
+				case FLAT:
+					// not much to do if flat!
+					break;
+				case LEFT_DOWN: 
+					setpoint.theta = 1.57 + user_interface.drive_stick;
+					if(setpoint.theta >= 1.57 + config.theta_ref_max){
+						setpoint.theta = 1.57 + config.theta_ref_max;
+					}
+					if(setpoint.theta <= 1.57 - config.theta_ref_max){
+						setpoint.theta = 1.57 - config.theta_ref_max;
+					}
+					setpoint.gamma = user_interface.turn_stick;
+					setpoint.gamma_dot = cstate.d_gamma;
+					if(setpoint.gamma_dot >= config.max_turn_rate){
+						setpoint.gamma_dot = config.max_turn_rate;
+					}
+					break; // end of LEFT_DOWN case 
+				case RIGHT_DOWN:
+					setpoint.theta = 1.57 + user_interface.drive_stick;
+					if(setpoint.theta >= 1.57 + config.theta_ref_max){
+						setpoint.theta = 1.57 + config.theta_ref_max;
+					}
+					if(setpoint.theta <= 1.57 - config.theta_ref_max){
+						setpoint.theta = 1.57 - config.theta_ref_max;
+					}
+					setpoint.gamma = user_interface.turn_stick;
+					setpoint.gamma_dot = cstate.d_gamma;
+					if(setpoint.gamma_dot >= config.max_turn_rate){
+						setpoint.gamma_dot = config.max_turn_rate;
+					}
+					break; // end of RIGHT_DOWN case
+				case NOSE_DOWN:
+					setpoint.theta = 0 - user_interface.drive_stick;
+					if(setpoint.theta >= 0 + config.theta_ref_max){
+						setpoint.theta = 0 + config.theta_ref_max;
+					}
+					if(setpoint.theta <= 0 - config.theta_ref_max){
+						setpoint.theta = 0 - config.theta_ref_max;
+					}
+					setpoint.gamma = -user_interface.turn_stick;
+					setpoint.gamma_dot = cstate.d_gamma;
+					if(setpoint.gamma_dot >= config.max_turn_rate){
+						setpoint.gamma_dot = config.max_turn_rate;
+					}
+					break; // end of NOSE_DOWN case
+				case NOSE_UP:
+					setpoint.theta = 0 - user_interface.drive_stick;
+					if(setpoint.theta >= 0 + config.theta_ref_max){
+						setpoint.theta = 0 + config.theta_ref_max;
+					}
+					if(setpoint.theta <= 0 - config.theta_ref_max){
+						setpoint.theta = 0 - config.theta_ref_max;
+					}
+					setpoint.gamma = -user_interface.turn_stick;
+					setpoint.gamma_dot = cstate.d_gamma;
+					if(setpoint.gamma_dot >= config.max_turn_rate){
+						setpoint.gamma_dot = config.max_turn_rate;
+					}
+					break; //end of NOSE_UP case
+				} //end of switch(cstate.poss_orientation)
 			}
 			break; // end of RUNNING case
 	
@@ -819,19 +907,54 @@ int balance_core(){
 		return -1;
 	}
 	
+	// complementary filter
+	//raw integer accelerometer values
+	xAccel = mpu.rawAccel[VEC3_X]; // DMP reverses x and Z
+	zAccel = mpu.rawAccel[VEC3_Z]; 
+	yGyro = -(mpu.rawGyro[VEC3_Y]-yGyroOffset);
+	//theta_DMP = mpu.fusedEuler[VEC3_Y];
+	
+	//first order filters NOSE_UP
+	accLP_NU = accLP_NU + LP_CONST * (atan2(zAccel,-xAccel) - accLP_NU);
+	gyroHP_NU = HP_CONST*(gyroHP_NU + (DT*yGyro*gyro_to_rad_per_sec));
+	theta_comp_NU = gyroHP_NU + accLP_NU;
+	//printf("%0.2f	%0.2f\n", theta, theta_DMP);
+	
+	//first order filters NOSE_DOWN
+	accLP_ND = accLP_ND + LP_CONST * (atan2(zAccel,xAccel) - accLP_ND);
+	gyroHP_ND = HP_CONST*(gyroHP_ND + (DT*-yGyro*gyro_to_rad_per_sec));
+	theta_comp_ND = gyroHP_ND + accLP_ND;
+	
 		/***********************************************************************
 	*	STATE_ESTIMATION
 	*	read sensors and compute the state regardless of if the controller
 	*	is ARMED or DISARMED
 	************************************************************************/
+	// for balancing in crab configuration
 	// angle theta is positive in the direction of forward tip
-	// add mounting angle of BBB (=0.02 for rover)
-	cstate.theta[2] = cstate.theta[1]; cstate.theta[1] = cstate.theta[0];
-	cstate.theta[0] = mpu.fusedEuler[VEC3_X] + 0; 		  		  
-	cstate.current_theta = cstate.theta[0];
-	cstate.d_theta = (cstate.theta[0]-cstate.theta[1])/DT;
+	// add mounting angle of BBB (theta_offset)
+	cstate.theta_crab[2] = cstate.theta_crab[1]; cstate.theta_crab[1] = cstate.theta_crab[0];
+	cstate.theta_crab[0] = fabs(mpu.fusedEuler[VEC3_X]) + config.theta_offset_crab; 		////////////////added fabs  		  
+	cstate.current_theta_crab = cstate.theta_crab[0];
+	//cstate.d_theta = (cstate.theta_crab[0]-cstate.theta_crab[1])/DT;
 	
-	// body turning estimation
+	// for balancing in NOSE_UP configuration
+	// angle theta is negative in the direction of forward tip (BBB facing away from user)
+	// add mounting angle of BBB (theta_offset)
+	cstate.theta_NU[2] = cstate.theta_NU[1]; cstate.theta_NU[1] = cstate.theta_NU[0];
+	cstate.theta_NU[0] = theta_comp_NU - 0.02; 		////////////////from complementary filter  		  
+	cstate.current_theta_NU = cstate.theta_NU[0];
+	//cstate.d_theta = (cstate.theta_NU[0]-cstate.theta_NU[1])/DT;
+	
+	// for balancing in NOSE_DOWN configuration
+	// angle theta is negative in the direction of forward tip
+	// add mounting angle of BBB (theta_offset)
+	cstate.theta_ND[2] = cstate.theta_ND[1]; cstate.theta_ND[1] = cstate.theta_ND[0];
+	cstate.theta_ND[0] = theta_comp_ND - 0.02; 		////////////////from complementary filter  		  
+	cstate.current_theta_ND = cstate.theta_ND[0];
+	//cstate.d_theta = (cstate.theta_ND[0]-cstate.theta_ND[1])/DT
+	
+	// body turning estimation for crab
 	cstate.gamma[2] = cstate.gamma[1]; cstate.gamma[1] = cstate.gamma[0];
 	cstate.gamma[0]= mpu.fusedEuler[VEC3_Z];
 	cstate.d_gamma = (cstate.gamma[0]-cstate.gamma[1])/DT;
@@ -867,84 +990,328 @@ int balance_core(){
 		if(setpoint.arm_state==DISARMED){
 			return 0;
 		}
-		
-		// check for a tipover before anything else
-		if(fabs(cstate.current_theta)<1.30 || fabs(cstate.current_theta)>1.84){	//config.tip_angle
-			disarm_controller();
-			printf("tip detected \n");
+		switch(cstate.poss_orientation){
+		case FLAT:
+			// not much to do if flat!
 			break;
-		}
+		case LEFT_DOWN:
+		// check for a tip over before anything else
+			if(fabs(cstate.current_theta_crab)<(1.57-config.tip_angle)\
+							|| fabs(cstate.current_theta_crab)>1.57+config.tip_angle){	
+				disarm_controller();
+				printf("tip detected \n");
+				break;
+			}
 		
-		// evaluate inner loop controller D1z
-		cstate.eTheta[2] = cstate.eTheta[1]; 
-		cstate.eTheta[1] = cstate.eTheta[0];
-		cstate.eTheta[0] = setpoint.theta - cstate.current_theta;	//setpoint.theta=0 if input_mode = NONE
-		cstate.u[2] = cstate.u[1];
-		cstate.u[1] = cstate.u[0];
-		cstate.u[0] = \
+			// evaluate inner loop controller D1z
+			cstate.eTheta[2] = cstate.eTheta[1]; 
+			cstate.eTheta[1] = cstate.eTheta[0];
+			cstate.eTheta[0] = setpoint.theta - cstate.current_theta_crab;	//setpoint.theta=0 if input_mode = NONE
+			cstate.u[2] = cstate.u[1];
+			cstate.u[1] = cstate.u[0];
+			cstate.u[0] = \
 				config.K_D1 * (config.numD1_0 * cstate.eTheta[0]	\
 								+	config.numD1_1 * cstate.eTheta[1] 	\
 								+	config.numD1_2 * cstate.eTheta[2])	\
 								-  (config.denD1_1 * cstate.u[1] 		\
 								+	config.denD1_2 * cstate.u[2]); 		
 		
-		// check saturation of inner loop knowing that right after
-		// this control will be scaled by battery voltage
-		if(saturate_number_limit(&cstate.u[0], config.v_nominal/cstate.vBatt)){
-			D1_saturation_counter ++;
-			if(D1_saturation_counter > IMU_SAMPLE_RATE_HZ/4){
-				printf("inner loop controller saturated\n");
-				disarm_controller();
-				D1_saturation_counter = 0;
-				break;
+			// check saturation of inner loop knowing that right after
+			// this control will be scaled by battery voltage
+			if(saturate_number_limit(&cstate.u[0], config.v_nominal/cstate.vBatt)){
+				D1_saturation_counter ++;
+				if(D1_saturation_counter > IMU_SAMPLE_RATE_HZ/4){
+					printf("inner loop controller saturated\n");
+					disarm_controller();
+					D1_saturation_counter = 0;
+					break;
+				}
 			}
-		}
-		else{
-			D1_saturation_counter = 0;
-		}
-		cstate.current_u = cstate.u[0];
+			else{
+				D1_saturation_counter = 0;
+			}
+			cstate.current_u = cstate.u[0];
 		
-		// scale output to compensate for battery charge level
-		compensated_D1_output = cstate.u[0] \
+			// scale output to compensate for battery charge level
+			compensated_D1_output = cstate.u[0] \
 					* (config.v_nominal / cstate.vBatt);
 		
-		//steering controller
-		// move the controller set points based on user input
-		setpoint.gamma += setpoint.gamma_dot * DT;
-		cstate.egamma[1] = cstate.egamma[0];
-		cstate.egamma[0] = setpoint.gamma - cstate.current_gamma;
-		//cstate.duty_split = config.KP_steer*(cstate.egamma[0] + config.KD_steer*(cstate.egamma[0]-cstate.egamma[1]));
-		cstate.duty_split = user_interface.turn_stick;
+			//steering controller
+			// move the controller set points based on user input
+			setpoint.gamma += setpoint.gamma_dot * DT;
+			cstate.egamma[1] = cstate.egamma[0];
+			cstate.egamma[0] = setpoint.gamma - cstate.current_gamma;
+			//cstate.duty_split = config.KP_steer*(cstate.egamma[0] + config.KD_steer*(cstate.egamma[0]-cstate.egamma[1]));
+			cstate.duty_split = user_interface.turn_stick;
 		
-		// if the steering input would saturate a motor, reduce			/////////dont need this but may as well keep
-		// the steering input to prevent compromising balance input
-		if(fabs(compensated_D1_output)+fabs(cstate.duty_split) > 1){
-			if(cstate.duty_split > 0){
-				cstate.duty_split = 1-fabs(compensated_D1_output);
+			// if the steering input would saturate a motor, reduce			
+			// the steering input to prevent compromising balance input
+			if(fabs(compensated_D1_output)+fabs(cstate.duty_split) > 1){
+				if(cstate.duty_split > 0){
+					cstate.duty_split = 1-fabs(compensated_D1_output);
+				}
+				else cstate.duty_split = -(1-fabs(compensated_D1_output));
+			}	
+		
+			// add D1 balance controller and steering control
+			dutyL  = compensated_D1_output + cstate.duty_split; 
+			dutyR = compensated_D1_output - cstate.duty_split;	
+		
+			// send to motors
+			// one motor is flipped on chassis so reverse duty to L	include /////////if statement here for which orient.
+			set_motor(config.motor_channel_L,dutyL); 				////////////switched signs on dutyL/R
+			set_motor(config.motor_channel_R,-dutyR); 
+			cstate.time_us = microsSinceEpoch();
+		
+			// pass new information to the log with add_to_buffer
+			// this only puts information in memory, doesn't
+			// write to disk immediately
+			if(config.enable_logging){											//????????????????????????
+				new_log_entry.time_us	= cstate.time_us-core_start_time_us;
+				new_log_entry.theta		= cstate.current_theta_crab;
+				new_log_entry.theta_ref	= setpoint.theta; 
+				new_log_entry.u 		= cstate.current_u;
+				add_to_buffer(new_log_entry);
 			}
-			else cstate.duty_split = -(1-fabs(compensated_D1_output));
-		}	
+			break; //end of LEFT_DOWN case
+		case RIGHT_DOWN:
+		// check for a tip over before anything else
+			if(fabs(cstate.current_theta_crab)<(1.57-config.tip_angle) || fabs(cstate.current_theta_crab)>1.57+config.tip_angle){	//config.tip_angle
+				disarm_controller();
+				printf("tip detected \n");
+				break;
+			}
+			
+			// evaluate inner loop controller D1z
+			cstate.eTheta[2] = cstate.eTheta[1]; 
+			cstate.eTheta[1] = cstate.eTheta[0];
+			cstate.eTheta[0] = setpoint.theta - fabs(cstate.current_theta_crab);	//setpoint.theta=0 if input_mode = NONE
+			cstate.u[2] = cstate.u[1];
+			cstate.u[1] = cstate.u[0];
+			cstate.u[0] = \
+				config.K_D1 * (config.numD1_0 * cstate.eTheta[0]	\
+								+	config.numD1_1 * cstate.eTheta[1] 	\
+								+	config.numD1_2 * cstate.eTheta[2])	\
+								-  (config.denD1_1 * cstate.u[1] 		\
+								+	config.denD1_2 * cstate.u[2]);
+								
+			// check saturation of inner loop knowing that right after
+			// this control will be scaled by battery voltage
+			if(saturate_number_limit(&cstate.u[0], config.v_nominal/cstate.vBatt)){
+				D1_saturation_counter ++;
+				if(D1_saturation_counter > IMU_SAMPLE_RATE_HZ/4){
+					printf("inner loop controller saturated\n");
+					disarm_controller();
+					D1_saturation_counter = 0;
+					break;
+				}
+			}
+			else{
+				D1_saturation_counter = 0;
+			}
+			cstate.current_u = cstate.u[0];
 		
-		// add D1 balance controller and steering control
-		dutyL  = compensated_D1_output + cstate.duty_split; 
-		dutyR = compensated_D1_output - cstate.duty_split;	
+			// scale output to compensate for battery charge level
+			compensated_D1_output = cstate.u[0] \
+					* (config.v_nominal / cstate.vBatt);
 		
-		// send to motors
-		// one motor is flipped on chassis so reverse duty to L	include /////////if statement here for which orient.
-		set_motor(config.motor_channel_L,dutyL); 				////////////switched signs on dutyL/R
-		set_motor(config.motor_channel_R,-dutyR); 
-		cstate.time_us = microsSinceEpoch();
+			//steering controller
+			// move the controller set points based on user input
+			setpoint.gamma += setpoint.gamma_dot * DT;
+			cstate.egamma[1] = cstate.egamma[0];
+			cstate.egamma[0] = setpoint.gamma - cstate.current_gamma;
+			//cstate.duty_split = config.KP_steer*(cstate.egamma[0] + config.KD_steer*(cstate.egamma[0]-cstate.egamma[1]));
+			cstate.duty_split = user_interface.turn_stick;
 		
-		// pass new information to the log with add_to_buffer
-		// this only puts information in memory, doesn't
-		// write to disk immediately
-		if(config.enable_logging){											//????????????????????????
-			new_log_entry.time_us	= cstate.time_us-core_start_time_us;
-			new_log_entry.theta		= cstate.current_theta;
-			new_log_entry.theta_ref	= setpoint.theta; 
-			new_log_entry.u 		= cstate.current_u;
-			add_to_buffer(new_log_entry);
-		}
+			// if the steering input would saturate a motor, reduce	
+			// the steering input to prevent compromising balance input
+			if(fabs(compensated_D1_output)+fabs(cstate.duty_split) > 1){
+				if(cstate.duty_split > 0){
+					cstate.duty_split = 1-fabs(compensated_D1_output);
+				}
+				else cstate.duty_split = -(1-fabs(compensated_D1_output));
+			}	
+		
+			// add D1 balance controller and steering control
+			dutyL  = compensated_D1_output + cstate.duty_split; 
+			dutyR = compensated_D1_output - cstate.duty_split;	
+		
+			// send to motors
+			// one motor is flipped on chassis so reverse duty to L	
+			set_motor(2,dutyL); 				
+			set_motor(3,-dutyR); 
+			cstate.time_us = microsSinceEpoch();
+		
+			// pass new information to the log with add_to_buffer
+			// this only puts information in memory, doesn't
+			// write to disk immediately
+			if(config.enable_logging){										
+				new_log_entry.time_us	= cstate.time_us-core_start_time_us;
+				new_log_entry.theta		= cstate.current_theta_crab;
+				new_log_entry.theta_ref	= setpoint.theta; 
+				new_log_entry.u 		= cstate.current_u;
+				add_to_buffer(new_log_entry);
+			}
+			break; //end of RIGHT_DOWN case
+			case NOSE_DOWN:
+			// check for a tip over before anything else
+			if(fabs(cstate.current_theta_ND)>(config.tip_angle)){
+				disarm_controller();
+				printf("tip detected \n");
+				break;
+			}
+			
+			// evaluate inner loop controller D1z
+			cstate.eTheta[2] = cstate.eTheta[1]; 
+			cstate.eTheta[1] = cstate.eTheta[0];
+			cstate.eTheta[0] = setpoint.theta - cstate.current_theta_ND;	//setpoint.theta=0 if input_mode = NONE
+			cstate.u[2] = cstate.u[1];
+			cstate.u[1] = cstate.u[0];
+			cstate.u[0] = \
+				2 * (config.numD1_0 * cstate.eTheta[0]	\
+								+	config.numD1_1 * cstate.eTheta[1] 	\
+								+	config.numD1_2 * cstate.eTheta[2])	\
+								-  (config.denD1_1 * cstate.u[1] 		\
+								+	config.denD1_2 * cstate.u[2]);
+								
+			// check saturation of inner loop knowing that right after
+			// this control will be scaled by battery voltage
+			if(saturate_number_limit(&cstate.u[0], config.v_nominal/cstate.vBatt)){
+				D1_saturation_counter ++;
+				if(D1_saturation_counter > IMU_SAMPLE_RATE_HZ/4){
+					printf("inner loop controller saturated\n");
+					disarm_controller();
+					D1_saturation_counter = 0;
+					break;
+				}
+			}
+			else{
+				D1_saturation_counter = 0;
+			}
+			cstate.current_u = cstate.u[0];
+		
+			// scale output to compensate for battery charge level
+			compensated_D1_output = cstate.u[0] \
+					* (config.v_nominal / cstate.vBatt);
+		
+			//steering controller
+			// move the controller set points based on user input
+			setpoint.gamma += setpoint.gamma_dot * DT;
+			cstate.egamma[1] = cstate.egamma[0];
+			cstate.egamma[0] = setpoint.gamma - cstate.current_gamma;
+			//cstate.duty_split = config.KP_steer*(cstate.egamma[0] + config.KD_steer*(cstate.egamma[0]-cstate.egamma[1]));
+			cstate.duty_split = -user_interface.turn_stick;
+		
+			// if the steering input would saturate a motor, reduce			
+			// the steering input to prevent compromising balance input
+			if(fabs(compensated_D1_output)+fabs(cstate.duty_split) > 1){
+				if(cstate.duty_split > 0){
+					cstate.duty_split = 1-fabs(compensated_D1_output);
+				}
+				else cstate.duty_split = -(1-fabs(compensated_D1_output));
+			}	
+		
+			// add D1 balance controller and steering control
+			dutyL  = compensated_D1_output + cstate.duty_split; 
+			dutyR = compensated_D1_output - cstate.duty_split;	
+		
+			// send to motors
+			// one motor is flipped on chassis so reverse duty to L	
+			set_motor(1,-dutyL); 				
+			set_motor(2,dutyR); 
+			cstate.time_us = microsSinceEpoch();
+		
+			// pass new information to the log with add_to_buffer
+			// this only puts information in memory, doesn't
+			// write to disk immediately
+			if(config.enable_logging){										
+				new_log_entry.time_us	= cstate.time_us-core_start_time_us;
+				new_log_entry.theta		= cstate.current_theta_ND;
+				new_log_entry.theta_ref	= setpoint.theta; 
+				new_log_entry.u 		= cstate.current_u;
+				add_to_buffer(new_log_entry);
+			}
+			break; //end of NOSE_DOWN case
+			case NOSE_UP:
+			// check for a tip over before anything else
+			if(fabs(cstate.current_theta_NU)>(config.tip_angle)){
+				disarm_controller();
+				printf("tip detected \n");
+				break;
+			}
+			
+			// evaluate inner loop controller D1z
+			cstate.eTheta[2] = cstate.eTheta[1]; 
+			cstate.eTheta[1] = cstate.eTheta[0];
+			cstate.eTheta[0] = setpoint.theta - cstate.current_theta_NU;	//setpoint.theta=0 if input_mode = NONE
+			cstate.u[2] = cstate.u[1];
+			cstate.u[1] = cstate.u[0];
+			cstate.u[0] = \
+				2 * (config.numD1_0 * cstate.eTheta[0]	\
+								+	config.numD1_1 * cstate.eTheta[1] 	\
+								+	config.numD1_2 * cstate.eTheta[2])	\
+								-  (config.denD1_1 * cstate.u[1] 		\
+								+	config.denD1_2 * cstate.u[2]);
+								
+			// check saturation of inner loop knowing that right after
+			// this control will be scaled by battery voltage
+			if(saturate_number_limit(&cstate.u[0], config.v_nominal/cstate.vBatt)){
+				D1_saturation_counter ++;
+				if(D1_saturation_counter > IMU_SAMPLE_RATE_HZ/4){
+					printf("inner loop controller saturated\n");
+					disarm_controller();
+					D1_saturation_counter = 0;
+					break;
+				}
+			}
+			else{
+				D1_saturation_counter = 0;
+			}
+			cstate.current_u = cstate.u[0];
+		
+			// scale output to compensate for battery charge level
+			compensated_D1_output = cstate.u[0] \
+					* (config.v_nominal / cstate.vBatt);
+		
+			//steering controller
+			// move the controller set points based on user input
+			setpoint.gamma += setpoint.gamma_dot * DT;
+			cstate.egamma[1] = cstate.egamma[0];
+			cstate.egamma[0] = setpoint.gamma - cstate.current_gamma;
+			//cstate.duty_split = config.KP_steer*(cstate.egamma[0] + config.KD_steer*(cstate.egamma[0]-cstate.egamma[1]));
+			cstate.duty_split = -user_interface.turn_stick;
+		
+			// if the steering input would saturate a motor, reduce			
+			// the steering input to prevent compromising balance input
+			if(fabs(compensated_D1_output)+fabs(cstate.duty_split) > 1){
+				if(cstate.duty_split > 0){
+					cstate.duty_split = 1-fabs(compensated_D1_output);
+				}
+				else cstate.duty_split = -(1-fabs(compensated_D1_output));
+			}	
+		
+			// add D1 balance controller and steering control
+			dutyL  = compensated_D1_output + cstate.duty_split; 
+			dutyR = compensated_D1_output - cstate.duty_split;	
+		
+			// send to motors
+			// one motor is flipped on chassis so reverse duty to L	
+			set_motor(3,-dutyL); 				
+			set_motor(4,dutyR); 
+			cstate.time_us = microsSinceEpoch();
+		
+			// pass new information to the log with add_to_buffer
+			// this only puts information in memory, doesn't
+			// write to disk immediately
+			if(config.enable_logging){										
+				new_log_entry.time_us	= cstate.time_us-core_start_time_us;
+				new_log_entry.theta		= cstate.current_theta_NU;
+				new_log_entry.theta_ref	= setpoint.theta; 
+				new_log_entry.u 		= cstate.current_u;
+				add_to_buffer(new_log_entry);
+			}
+			break; //end of NOSE_UP case
+		}	//end of switch(cstate.poss_orientation)
 		
 		// end of normal balancing routine
 		// last_state will be updated beginning of next interrupt
@@ -953,7 +1320,21 @@ int balance_core(){
 		default:
 			break; // nothing to do if UNINITIALIZED
 	}
-	return 0;
+	return 0;	
+}
+
+/************************************************************************
+* 	sample_imu()
+*	complementary filter initialization sampling
+************************************************************************/
+int sample_imu(){
+	if (mpu9150_read(&mpu) == 0) {
+		sum_ax += mpu.rawAccel[VEC3_X];
+		sum_az += mpu.rawAccel[VEC3_Z]; 
+		sum_gy += mpu.rawGyro[VEC3_Y];
+		warmup_samples ++;
+	}
+	return 0; 
 }
 
 /************************************************************************
@@ -966,7 +1347,7 @@ int balance_core(){
 int zero_out_controller(){
 	// wipe setpoint
 	setpoint.gamma = 0;		//leave in for future yaw control
-	setpoint.theta = 1.57;		//////////////////made change here///////////////////////////////////////////////////
+	setpoint.theta = 0;		//////////////////made change here///////////////////////////////////////////////////
 	cstate.u[0] = 0;
 	cstate.u[1] = 0;
 	cstate.u[2] = 0;
@@ -1038,7 +1419,13 @@ int wait_for_starting_condition(){
 
 	while(get_state()!=EXITING){
 		// if within range, start counting
-		if(fabs(cstate.current_theta)>1.4){		//config.start_angle
+		if(fabs(cstate.current_theta_crab)>1.4){	//config.start_angle
+			checks++;
+			// waited long enough, return
+			if(checks>=checks_needed) return 0;
+		}
+		else if(fabs(cstate.current_theta_NU)<config.start_angle \
+						|| fabs(cstate.current_theta_ND)<config.start_angle){
 			checks++;
 			// waited long enough, return
 			if(checks>=checks_needed) return 0;
@@ -1077,7 +1464,7 @@ void* battery_checker(void* ptr){
 *	prints diagnostics to console
 *   this only gets started if executing from terminal
 ************************************************************************/
-void* printf_loop(void* ptr){
+/* void* printf_loop(void* ptr){
 	// keep track of last global state variable
 	state_t last_state;
 	drive_mode_t last_drive_mode = user_interface.drive_mode;
@@ -1140,21 +1527,21 @@ void* printf_loop(void* ptr){
 		usleep(200000);
 	}
 	return NULL;
-}  
+} */  
 
 /***********************************************************************
 *	printf_loop() 
 *	prints diagnostics to console
 *   this only gets started if executing from terminal
 ************************************************************************/
-/* void* printf_loop(void* ptr){
+void* printf_loop(void* ptr){
 	state_t last_state, new_state; // keep track of last state 
 	while(1){
 		new_state = get_state();
 		// check if this is the first time since being paused
 		if(new_state==RUNNING && last_state!=RUNNING){
 			printf("\nRUNNING: Hold upright to balance.\n");
-			printf(" theta t_ref u   p_ref gamma   u \n");
+			printf(" theta t_ref d_split  drive_stick   u    \n");
 		}
 		else if(new_state==PAUSED && last_state!=PAUSED){
 			printf("\nPAUSED: press pause again to start.\n");
@@ -1165,15 +1552,25 @@ void* printf_loop(void* ptr){
 		switch (new_state){	
 		case RUNNING: { // show all the things
 			printf("\r");
-			printf(" %0.2f ", cstate.current_theta);
+			printf(" %0.2f ", cstate.current_theta_NU);
 			printf(" %0.2f ", setpoint.theta);
-			//printf(" %0.2f ", cstate.current_phi);
-			//printf(" %0.2f ", setpoint.phi);
+			printf(" %0.2f ", cstate.duty_split);
+			printf(" %0.9f ", user_interface.drive_stick);
 			//printf(" %0.2f ", cstate.current_gamma);
 			printf(" %0.2f ", cstate.current_u);
 			
+			if(user_interface.input_mode == DSM2)
+				printf(" DSM2 ");
+			
+			printf("   ");
+			
+			if(setpoint.core_mode == ANGLE)
+				printf(" ANGLE ");
+			
+			printf("   ");
+			
 			if(setpoint.arm_state == ARMED)
-				printf(" ARMED");
+				printf(" ARMED ");
 			else
 				printf("DISARMED");
 			printf("   "); // clear remaining characters
@@ -1181,7 +1578,7 @@ void* printf_loop(void* ptr){
 			break;
 			}
 		case PAUSED: { // only print theta when paused
-			printf("\rtheta: %0.2f   ", cstate.current_theta);
+			printf("\rtheta: %0.2f   ", cstate.current_theta_crab);
 			break;
 			}
 		case EXITING:{
@@ -1194,7 +1591,7 @@ void* printf_loop(void* ptr){
 		usleep(200000);
 	}
 	return NULL;
-}  */
+} 
 
 /***********************************************************************
 *	on_pause_press() 
