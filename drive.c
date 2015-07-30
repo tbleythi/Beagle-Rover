@@ -138,11 +138,13 @@ typedef struct core_state_t{
 	// time when core_controller has finished a step
 	uint64_t time_us; 
 	// inner feedback loop to control theta body angle
-	float theta_crab[3];
-	float theta_NU[3];	// theta estimation in NOSE_UP configuration
-	float theta_ND[3];	// theta estimation in NOSE_DOWN configuration
+	float theta_LD[3];	// theta estimation in LEFT_DOWN orientation
+	float theta_RD[3];	// theta estimation in RIGHT_DOWN orientation
+	float theta_NU[3];	// theta estimation in NOSE_UP orientation
+	float theta_ND[3];	// theta estimation in NOSE_DOWN orientation
 	float theta_ref[3];
-	float current_theta_crab;
+	float current_theta_LD;
+	float current_theta_RD;
 	float current_theta_NU;
 	float current_theta_ND;
 	float d_theta;
@@ -170,14 +172,17 @@ typedef struct core_state_t{
 // Complementary Filter for pitch angle theta about Y axis
 	const float HP_CONST = THETA_MIX_TC/(THETA_MIX_TC + DT);
 	const float LP_CONST = DT/(THETA_MIX_TC + DT);
-	int xAccel, zAccel, yGyroOffset;
-	float yGyro, accLP_ND, accLP_NU, gyroHP_ND, gyroHP_NU, theta_comp_ND, theta_comp_NU, theta_DMP;
+	int xAccel, yAccel, zAccel, yGyroOffset, xGyroOffset;
+	float accLP_LD, accLP_RD, accLP_ND, accLP_NU;
+	float yGyro, xGyro, gyroHP_LD, gyroHP_RD, gyroHP_ND, gyroHP_NU;
+	float theta_LD, theta_RD, theta_ND, theta_NU;
 	unsigned short gyro_fsr; //full scale range of gyro
 	float gyro_to_rad_per_sec;
 	mpudata_t mpu; //struct to read IMU data into 
 	// Filter Initialization sampling
-	float sum_ax, sum_az, sum_gy;
-	int warmup_samples;
+	float sum_ax, sum_ay, sum_az, sum_gx, sum_gy;
+	int warmup_samples_x;
+	int warmup_samples_y;
 
 
 
@@ -322,11 +327,16 @@ int main(){
 	set_imu_interrupt_func(&sample_imu);
 	sleep(1);
 	set_imu_interrupt_func(&null_func); //stop interrupt routine
-	yGyroOffset = sum_gy/warmup_samples;	// offset to correct for gyro bias
-    accLP_NU = atan2(sum_az, -sum_ax); 	// initialize accLP at current theta
-	accLP_ND = atan2(sum_az, sum_ax);
-	theta_comp_NU = accLP_NU;								// start theta based on accel
-	theta_comp_ND = accLP_ND;
+	yGyroOffset = sum_gy/warmup_samples_y;	// offset to correct for gyro bias in pitch
+	xGyroOffset = sum_gx/warmup_samples_x;	// offset to correct for gyro bias in roll
+    accLP_NU = atan2(sum_az, -sum_ax); 	// initialize accLP at current theta for NOSE_UP
+	accLP_ND = atan2(sum_az, sum_ax);	// NOSE_DOWN
+	accLP_RD = atan2(sum_az, -sum_ay);	// RIGHT_DOWN
+	accLP_LD = atan2(sum_az, sum_ay);	// LEFT_DOWN
+	theta_LD = accLP_LD;
+	theta_RD = accLP_RD;
+	theta_NU = accLP_NU;								// start theta based on accel
+	theta_ND = accLP_ND;
 	//printf("yGyroOffset = %d\n", yGyroOffset);
 	
 	//start the interrupt handler this should be the last 
@@ -804,79 +814,30 @@ void* balance_stack(void* ptr){
 			}
 		
 		
-			/* if(user_interface.input_mode == NONE){
+			if(user_interface.input_mode == NONE){	
 				// no user input, just keep the controller setpoint at zero
 				setpoint.theta = 0;		///////////made change here//////////////////////////////////////////
 				
 				setpoint.gamma = 0;		//leave in for future yaw control
 				setpoint.gamma_dot = 0;		//leave in for future yaw control
 				break;
-			} */
+			} 
 			if(setpoint.core_mode == ANGLE){
 				// in angle mode, scale user input from -1 to 1 to
 				// the minimum and maximum theta reference angles
 				//setpoint.theta = 1.57 + config.theta_ref_max*(saturate_number_limit(&user_interface.drive_stick,1));
-				switch(cstate.poss_orientation){
-				case FLAT:
-					// not much to do if flat!
-					break;
-				case LEFT_DOWN: 
-					setpoint.theta = 1.57 + user_interface.drive_stick;
-					if(setpoint.theta >= 1.57 + config.theta_ref_max){
-						setpoint.theta = 1.57 + config.theta_ref_max;
+				setpoint.theta = -user_interface.drive_stick;
+					if(setpoint.theta >= config.theta_ref_max){
+						setpoint.theta = config.theta_ref_max;
 					}
-					if(setpoint.theta <= 1.57 - config.theta_ref_max){
-						setpoint.theta = 1.57 - config.theta_ref_max;
+					if(setpoint.theta <= -config.theta_ref_max){
+						setpoint.theta = -config.theta_ref_max;
 					}
 					setpoint.gamma = user_interface.turn_stick;
 					setpoint.gamma_dot = cstate.d_gamma;
 					if(setpoint.gamma_dot >= config.max_turn_rate){
 						setpoint.gamma_dot = config.max_turn_rate;
 					}
-					break; // end of LEFT_DOWN case 
-				case RIGHT_DOWN:
-					setpoint.theta = 1.57 + user_interface.drive_stick;
-					if(setpoint.theta >= 1.57 + config.theta_ref_max){
-						setpoint.theta = 1.57 + config.theta_ref_max;
-					}
-					if(setpoint.theta <= 1.57 - config.theta_ref_max){
-						setpoint.theta = 1.57 - config.theta_ref_max;
-					}
-					setpoint.gamma = user_interface.turn_stick;
-					setpoint.gamma_dot = cstate.d_gamma;
-					if(setpoint.gamma_dot >= config.max_turn_rate){
-						setpoint.gamma_dot = config.max_turn_rate;
-					}
-					break; // end of RIGHT_DOWN case
-				case NOSE_DOWN:
-					setpoint.theta = 0 - user_interface.drive_stick;
-					if(setpoint.theta >= 0 + config.theta_ref_max){
-						setpoint.theta = 0 + config.theta_ref_max;
-					}
-					if(setpoint.theta <= 0 - config.theta_ref_max){
-						setpoint.theta = 0 - config.theta_ref_max;
-					}
-					setpoint.gamma = -user_interface.turn_stick;
-					setpoint.gamma_dot = cstate.d_gamma;
-					if(setpoint.gamma_dot >= config.max_turn_rate){
-						setpoint.gamma_dot = config.max_turn_rate;
-					}
-					break; // end of NOSE_DOWN case
-				case NOSE_UP:
-					setpoint.theta = 0 - user_interface.drive_stick;
-					if(setpoint.theta >= 0 + config.theta_ref_max){
-						setpoint.theta = 0 + config.theta_ref_max;
-					}
-					if(setpoint.theta <= 0 - config.theta_ref_max){
-						setpoint.theta = 0 - config.theta_ref_max;
-					}
-					setpoint.gamma = -user_interface.turn_stick;
-					setpoint.gamma_dot = cstate.d_gamma;
-					if(setpoint.gamma_dot >= config.max_turn_rate){
-						setpoint.gamma_dot = config.max_turn_rate;
-					}
-					break; //end of NOSE_UP case
-				} //end of switch(cstate.poss_orientation)
 			}
 			break; // end of RUNNING case
 	
@@ -911,19 +872,30 @@ int balance_core(){
 	//raw integer accelerometer values
 	xAccel = mpu.rawAccel[VEC3_X]; // DMP reverses x and Z
 	zAccel = mpu.rawAccel[VEC3_Z]; 
+	yAccel = mpu.rawAccel[VEC3_Y];
 	yGyro = -(mpu.rawGyro[VEC3_Y]-yGyroOffset);
-	//theta_DMP = mpu.fusedEuler[VEC3_Y];
+	xGyro = -(mpu.rawGyro[VEC3_X]-xGyroOffset);
+	
+	//first order filters LEFT_DOWN
+	accLP_LD = accLP_LD + LP_CONST * (atan2(zAccel,yAccel) - accLP_LD);
+	gyroHP_LD = HP_CONST*(gyroHP_LD + (DT*xGyro*gyro_to_rad_per_sec));
+	theta_LD = gyroHP_LD + accLP_LD; 
+	
+	//first order filters RIGHT_DOWN
+	accLP_RD = accLP_RD + LP_CONST * (atan2(zAccel,-yAccel) - accLP_RD);
+	gyroHP_RD = HP_CONST*(gyroHP_RD + (DT*-xGyro*gyro_to_rad_per_sec));
+	theta_RD = gyroHP_RD + accLP_RD;
 	
 	//first order filters NOSE_UP
 	accLP_NU = accLP_NU + LP_CONST * (atan2(zAccel,-xAccel) - accLP_NU);
 	gyroHP_NU = HP_CONST*(gyroHP_NU + (DT*yGyro*gyro_to_rad_per_sec));
-	theta_comp_NU = gyroHP_NU + accLP_NU;
+	theta_NU = gyroHP_NU + accLP_NU;
 	//printf("%0.2f	%0.2f\n", theta, theta_DMP);
 	
 	//first order filters NOSE_DOWN
 	accLP_ND = accLP_ND + LP_CONST * (atan2(zAccel,xAccel) - accLP_ND);
 	gyroHP_ND = HP_CONST*(gyroHP_ND + (DT*-yGyro*gyro_to_rad_per_sec));
-	theta_comp_ND = gyroHP_ND + accLP_ND;
+	theta_ND = gyroHP_ND + accLP_ND;
 	
 		/***********************************************************************
 	*	STATE_ESTIMATION
@@ -933,16 +905,30 @@ int balance_core(){
 	// for balancing in crab configuration
 	// angle theta is positive in the direction of forward tip
 	// add mounting angle of BBB (theta_offset)
-	cstate.theta_crab[2] = cstate.theta_crab[1]; cstate.theta_crab[1] = cstate.theta_crab[0];
+	/* cstate.theta_crab[2] = cstate.theta_crab[1]; cstate.theta_crab[1] = cstate.theta_crab[0];
 	cstate.theta_crab[0] = fabs(mpu.fusedEuler[VEC3_X]) + config.theta_offset_crab; 		////////////////added fabs  		  
-	cstate.current_theta_crab = cstate.theta_crab[0];
+	cstate.current_theta_crab = cstate.theta_crab[0]; */
 	//cstate.d_theta = (cstate.theta_crab[0]-cstate.theta_crab[1])/DT;
+	
+	// for balancing in LEFT_DOWN configuration
+	// angle theta is negative in the direction of forward tip (BBB facing away from user)
+	// add mounting angle of BBB (theta_offset)
+	cstate.theta_LD[2] = cstate.theta_LD[1]; cstate.theta_LD[1] = cstate.theta_LD[0];
+	cstate.theta_LD[0] = theta_LD - 0.025; 		////////////////from complementary filter  		  
+	cstate.current_theta_LD = cstate.theta_LD[0]; 
+	
+	// for balancing in RIGHT_DOWN configuration
+	// angle theta is negative in the direction of forward tip (BBB facing away from user)
+	// add mounting angle of BBB (theta_offset)
+	cstate.theta_RD[2] = cstate.theta_RD[1]; cstate.theta_RD[1] = cstate.theta_RD[0];
+	cstate.theta_RD[0] = theta_RD - 0.025; 		////////////////from complementary filter  		  
+	cstate.current_theta_RD = cstate.theta_RD[0];
 	
 	// for balancing in NOSE_UP configuration
 	// angle theta is negative in the direction of forward tip (BBB facing away from user)
 	// add mounting angle of BBB (theta_offset)
 	cstate.theta_NU[2] = cstate.theta_NU[1]; cstate.theta_NU[1] = cstate.theta_NU[0];
-	cstate.theta_NU[0] = theta_comp_NU - 0.02; 		////////////////from complementary filter  		  
+	cstate.theta_NU[0] = theta_NU - 0.02; 		////////////////from complementary filter  		  
 	cstate.current_theta_NU = cstate.theta_NU[0];
 	//cstate.d_theta = (cstate.theta_NU[0]-cstate.theta_NU[1])/DT;
 	
@@ -950,11 +936,11 @@ int balance_core(){
 	// angle theta is negative in the direction of forward tip
 	// add mounting angle of BBB (theta_offset)
 	cstate.theta_ND[2] = cstate.theta_ND[1]; cstate.theta_ND[1] = cstate.theta_ND[0];
-	cstate.theta_ND[0] = theta_comp_ND - 0.02; 		////////////////from complementary filter  		  
+	cstate.theta_ND[0] = theta_ND - 0.02; 		////////////////from complementary filter  		  
 	cstate.current_theta_ND = cstate.theta_ND[0];
 	//cstate.d_theta = (cstate.theta_ND[0]-cstate.theta_ND[1])/DT
 	
-	// body turning estimation for crab
+	// body turning estimation
 	cstate.gamma[2] = cstate.gamma[1]; cstate.gamma[1] = cstate.gamma[0];
 	cstate.gamma[0]= mpu.fusedEuler[VEC3_Z];
 	cstate.d_gamma = (cstate.gamma[0]-cstate.gamma[1])/DT;
@@ -996,8 +982,7 @@ int balance_core(){
 			break;
 		case LEFT_DOWN:
 		// check for a tip over before anything else
-			if(fabs(cstate.current_theta_crab)<(1.57-config.tip_angle)\
-							|| fabs(cstate.current_theta_crab)>1.57+config.tip_angle){	
+			if(fabs(cstate.current_theta_LD)>config.tip_angle){	
 				disarm_controller();
 				printf("tip detected \n");
 				break;
@@ -1006,7 +991,7 @@ int balance_core(){
 			// evaluate inner loop controller D1z
 			cstate.eTheta[2] = cstate.eTheta[1]; 
 			cstate.eTheta[1] = cstate.eTheta[0];
-			cstate.eTheta[0] = setpoint.theta - cstate.current_theta_crab;	//setpoint.theta=0 if input_mode = NONE
+			cstate.eTheta[0] = setpoint.theta - cstate.current_theta_LD;	//setpoint.theta=0 if input_mode = NONE
 			cstate.u[2] = cstate.u[1];
 			cstate.u[1] = cstate.u[0];
 			cstate.u[0] = \
@@ -1059,8 +1044,8 @@ int balance_core(){
 		
 			// send to motors
 			// one motor is flipped on chassis so reverse duty to L	include /////////if statement here for which orient.
-			set_motor(config.motor_channel_L,dutyL); 				////////////switched signs on dutyL/R
-			set_motor(config.motor_channel_R,-dutyR); 
+			set_motor(config.motor_channel_L,-dutyL); 				////////////switched signs on dutyL/R
+			set_motor(config.motor_channel_R,dutyR); 
 			cstate.time_us = microsSinceEpoch();
 		
 			// pass new information to the log with add_to_buffer
@@ -1068,7 +1053,7 @@ int balance_core(){
 			// write to disk immediately
 			if(config.enable_logging){											//????????????????????????
 				new_log_entry.time_us	= cstate.time_us-core_start_time_us;
-				new_log_entry.theta		= cstate.current_theta_crab;
+				new_log_entry.theta		= cstate.current_theta_LD;
 				new_log_entry.theta_ref	= setpoint.theta; 
 				new_log_entry.u 		= cstate.current_u;
 				add_to_buffer(new_log_entry);
@@ -1076,7 +1061,7 @@ int balance_core(){
 			break; //end of LEFT_DOWN case
 		case RIGHT_DOWN:
 		// check for a tip over before anything else
-			if(fabs(cstate.current_theta_crab)<(1.57-config.tip_angle) || fabs(cstate.current_theta_crab)>1.57+config.tip_angle){	//config.tip_angle
+			if(fabs(cstate.current_theta_RD)>config.tip_angle){	//config.tip_angle
 				disarm_controller();
 				printf("tip detected \n");
 				break;
@@ -1085,7 +1070,7 @@ int balance_core(){
 			// evaluate inner loop controller D1z
 			cstate.eTheta[2] = cstate.eTheta[1]; 
 			cstate.eTheta[1] = cstate.eTheta[0];
-			cstate.eTheta[0] = setpoint.theta - fabs(cstate.current_theta_crab);	//setpoint.theta=0 if input_mode = NONE
+			cstate.eTheta[0] = setpoint.theta - fabs(cstate.current_theta_RD);	//setpoint.theta=0 if input_mode = NONE
 			cstate.u[2] = cstate.u[1];
 			cstate.u[1] = cstate.u[0];
 			cstate.u[0] = \
@@ -1138,8 +1123,8 @@ int balance_core(){
 		
 			// send to motors
 			// one motor is flipped on chassis so reverse duty to L	
-			set_motor(2,dutyL); 				
-			set_motor(3,-dutyR); 
+			set_motor(2,-dutyL); 				
+			set_motor(3,dutyR); 
 			cstate.time_us = microsSinceEpoch();
 		
 			// pass new information to the log with add_to_buffer
@@ -1147,7 +1132,7 @@ int balance_core(){
 			// write to disk immediately
 			if(config.enable_logging){										
 				new_log_entry.time_us	= cstate.time_us-core_start_time_us;
-				new_log_entry.theta		= cstate.current_theta_crab;
+				new_log_entry.theta		= cstate.current_theta_RD;
 				new_log_entry.theta_ref	= setpoint.theta; 
 				new_log_entry.u 		= cstate.current_u;
 				add_to_buffer(new_log_entry);
@@ -1332,7 +1317,8 @@ int sample_imu(){
 		sum_ax += mpu.rawAccel[VEC3_X];
 		sum_az += mpu.rawAccel[VEC3_Z]; 
 		sum_gy += mpu.rawGyro[VEC3_Y];
-		warmup_samples ++;
+		warmup_samples_x ++;
+		warmup_samples_y ++;
 	}
 	return 0; 
 }
@@ -1419,7 +1405,8 @@ int wait_for_starting_condition(){
 
 	while(get_state()!=EXITING){
 		// if within range, start counting
-		if(fabs(cstate.current_theta_crab)>1.4){	//config.start_angle
+		if(fabs(cstate.current_theta_LD)<config.start_angle \
+						|| fabs(cstate.current_theta_RD)<config.start_angle){	//config.start_angle
 			checks++;
 			// waited long enough, return
 			if(checks>=checks_needed) return 0;
@@ -1552,7 +1539,7 @@ void* printf_loop(void* ptr){
 		switch (new_state){	
 		case RUNNING: { // show all the things
 			printf("\r");
-			printf(" %0.2f ", cstate.current_theta_NU);
+			printf(" %0.2f ", cstate.current_theta_LD);
 			printf(" %0.2f ", setpoint.theta);
 			printf(" %0.2f ", cstate.duty_split);
 			printf(" %0.9f ", user_interface.drive_stick);
@@ -1578,7 +1565,7 @@ void* printf_loop(void* ptr){
 			break;
 			}
 		case PAUSED: { // only print theta when paused
-			printf("\rtheta: %0.2f   ", cstate.current_theta_crab);
+			printf("\rtheta: %0.2f   ", cstate.current_theta_LD);	// LD is arbitrary
 			break;
 			}
 		case EXITING:{
