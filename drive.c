@@ -181,8 +181,6 @@ typedef struct core_state_t{
 	mpudata_t mpu; //struct to read IMU data into 
 	// Filter Initialization sampling
 	float sum_ax, sum_ay, sum_az, sum_gx, sum_gy;
-	int warmup_samples_x;
-	int warmup_samples_y;
 
 
 
@@ -327,8 +325,6 @@ int main(){
 	set_imu_interrupt_func(&sample_imu);
 	sleep(1);
 	set_imu_interrupt_func(&null_func); //stop interrupt routine
-	yGyroOffset = sum_gy/warmup_samples_y;	// offset to correct for gyro bias in pitch
-	xGyroOffset = sum_gx/warmup_samples_x;	// offset to correct for gyro bias in roll
     accLP_NU = atan2(sum_az, -sum_ax); 	// initialize accLP at current theta for NOSE_UP
 	accLP_ND = atan2(sum_az, sum_ax);	// NOSE_DOWN
 	accLP_RD = atan2(sum_az, -sum_ay);	// RIGHT_DOWN
@@ -1061,7 +1057,7 @@ int balance_core(){
 			break; //end of LEFT_DOWN case
 		case RIGHT_DOWN:
 		// check for a tip over before anything else
-			if(fabs(cstate.current_theta_RD)>config.tip_angle){	//config.tip_angle
+			if(fabs(cstate.current_theta_RD)>config.tip_angle){	
 				disarm_controller();
 				printf("tip detected \n");
 				break;
@@ -1153,11 +1149,11 @@ int balance_core(){
 			cstate.u[2] = cstate.u[1];
 			cstate.u[1] = cstate.u[0];
 			cstate.u[0] = \
-				2 * (config.numD1_0 * cstate.eTheta[0]	\
-								+	config.numD1_1 * cstate.eTheta[1] 	\
-								+	config.numD1_2 * cstate.eTheta[2])	\
-								-  (config.denD1_1 * cstate.u[1] 		\
-								+	config.denD1_2 * cstate.u[2]);
+				  (config.numD2_0 * cstate.eTheta[0]	\
+								+	config.numD2_1 * cstate.eTheta[1] 	\
+								+	config.numD2_2 * cstate.eTheta[2])	\
+								-  (config.denD2_1 * cstate.u[1] 		\
+								+	config.denD2_2 * cstate.u[2]);
 								
 			// check saturation of inner loop knowing that right after
 			// this control will be scaled by battery voltage
@@ -1232,11 +1228,11 @@ int balance_core(){
 			cstate.u[2] = cstate.u[1];
 			cstate.u[1] = cstate.u[0];
 			cstate.u[0] = \
-				2 * (config.numD1_0 * cstate.eTheta[0]	\
-								+	config.numD1_1 * cstate.eTheta[1] 	\
-								+	config.numD1_2 * cstate.eTheta[2])	\
-								-  (config.denD1_1 * cstate.u[1] 		\
-								+	config.denD1_2 * cstate.u[2]);
+				  (config.numD2_0 * cstate.eTheta[0]	\
+								+	config.numD2_1 * cstate.eTheta[1] 	\
+								+	config.numD2_2 * cstate.eTheta[2])	\
+								-  (config.denD2_1 * cstate.u[1] 		\
+								+	config.denD2_2 * cstate.u[2]);
 								
 			// check saturation of inner loop knowing that right after
 			// this control will be scaled by battery voltage
@@ -1315,10 +1311,9 @@ int balance_core(){
 int sample_imu(){
 	if (mpu9150_read(&mpu) == 0) {
 		sum_ax += mpu.rawAccel[VEC3_X];
-		sum_az += mpu.rawAccel[VEC3_Z]; 
+		sum_az += mpu.rawAccel[VEC3_Z];
+		sum_ay += mpu.rawAccel[VEC3_Y];
 		sum_gy += mpu.rawGyro[VEC3_Y];
-		warmup_samples_x ++;
-		warmup_samples_y ++;
 	}
 	return 0; 
 }
@@ -1539,7 +1534,7 @@ void* printf_loop(void* ptr){
 		switch (new_state){	
 		case RUNNING: { // show all the things
 			printf("\r");
-			printf(" %0.2f ", cstate.current_theta_LD);
+			printf(" %0.2f ", cstate.current_theta_RD);
 			printf(" %0.2f ", setpoint.theta);
 			printf(" %0.2f ", cstate.duty_split);
 			printf(" %0.9f ", user_interface.drive_stick);
@@ -1548,13 +1543,14 @@ void* printf_loop(void* ptr){
 			
 			if(user_interface.input_mode == DSM2)
 				printf(" DSM2 ");
-			
+			else
+				printf("NONE");
 			printf("   ");
 			
-			if(setpoint.core_mode == ANGLE)
+			/* if(setpoint.core_mode == ANGLE)
 				printf(" ANGLE ");
 			
-			printf("   ");
+			printf("   "); */
 			
 			if(setpoint.arm_state == ARMED)
 				printf(" ARMED ");
