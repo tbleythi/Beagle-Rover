@@ -172,7 +172,7 @@ typedef struct core_state_t{
 // Complementary Filter for pitch angle theta about Y axis
 	const float HP_CONST = THETA_MIX_TC/(THETA_MIX_TC + DT);
 	const float LP_CONST = DT/(THETA_MIX_TC + DT);
-	int xAccel, yAccel, zAccel, yGyroOffset, xGyroOffset;
+	int xAccel, yAccel, zAccel;
 	float accLP_LD, accLP_RD, accLP_ND, accLP_NU;
 	float yGyro, xGyro, gyroHP_LD, gyroHP_RD, gyroHP_ND, gyroHP_NU;
 	float theta_LD, theta_RD, theta_ND, theta_NU;
@@ -333,7 +333,6 @@ int main(){
 	theta_RD = accLP_RD;
 	theta_NU = accLP_NU;								// start theta based on accel
 	theta_ND = accLP_ND;
-	//printf("yGyroOffset = %d\n", yGyroOffset);
 	
 	//start the interrupt handler this should be the last 
 	//step in initialization to make sure other setup functions don't interfere
@@ -869,8 +868,8 @@ int balance_core(){
 	xAccel = mpu.rawAccel[VEC3_X]; // DMP reverses x and Z
 	zAccel = mpu.rawAccel[VEC3_Z]; 
 	yAccel = mpu.rawAccel[VEC3_Y];
-	yGyro = -(mpu.rawGyro[VEC3_Y]-yGyroOffset);
-	xGyro = -(mpu.rawGyro[VEC3_X]-xGyroOffset);
+	yGyro = -(mpu.rawGyro[VEC3_Y]);
+	xGyro = -(mpu.rawGyro[VEC3_X]);
 	
 	//first order filters LEFT_DOWN
 	accLP_LD = accLP_LD + LP_CONST * (atan2(zAccel,yAccel) - accLP_LD);
