@@ -167,7 +167,7 @@ typedef struct core_state_t{
 	const float HP_CONST = THETA_MIX_TC/(THETA_MIX_TC + DT);
 	const float LP_CONST = DT/(THETA_MIX_TC + DT);
 	int xAccel, yAccel, zAccel;
-	float accLP;
+	float accLP, accLP_pitch;
 	float yGyro, xGyro, gyroHP;
 	float theta;
 	unsigned short gyro_fsr; //full scale range of gyro
@@ -853,14 +853,17 @@ int balance_core(){
 	yAccel = mpu.rawAccel[VEC3_Y];
 	yGyro = -(mpu.rawGyro[VEC3_Y]);
 	xGyro = -(mpu.rawGyro[VEC3_X]);
+	accLP_pitch = atan2(zAccel,xAccel);										 // initialize accLP at current theta
+	theta = accLP;														 // initialize theta with accelerometer
 	
 	switch(cstate.orientation){
 		case FLAT:
 		//Not much to do if flat!
+		disarm_controller();
 		break;
 		case LEFT_DOWN: {
 			accLP = atan2(zAccel,yAccel); 								 // initialize accLP at current theta
-			theta = accLP;												 // initialize theta with accelerometer
+			theta = accLP; 												 // initialize theta with accelerometer
 			accLP = accLP + LP_CONST * (atan2(zAccel,yAccel) - accLP); 	 // first order filter LEFT_DOWN
 			gyroHP = HP_CONST*(gyroHP + (DT*xGyro*gyro_to_rad_per_sec)); // gyroHP starts at zero
 			theta = gyroHP + accLP + config.theta_tilt_roll; // tilt angle of BBB at equilibrium about roll axis
@@ -877,8 +880,8 @@ int balance_core(){
 			break;
 		}
 		case NOSE_UP: {
-			accLP = atan2(zAccel, -xAccel);
-			theta = accLP;
+			/* accLP = atan2(zAccel, -xAccel);
+			theta = accLP; */
 			accLP = accLP + LP_CONST * (atan2(zAccel,-xAccel) - accLP);  // first order filter NOSE_UP
 			gyroHP = HP_CONST*(gyroHP + (DT*yGyro*gyro_to_rad_per_sec));  
 			theta = gyroHP + accLP + config.theta_tilt_pitch;			 
@@ -947,7 +950,7 @@ int balance_core(){
 		// check for a tip over before anything else
 		if(fabs(cstate.current_theta)>config.tip_angle){	
 			disarm_controller();
-			printf("tip detected \n");
+			//printf("tip detected \n");
 			break;
 		}
 		
