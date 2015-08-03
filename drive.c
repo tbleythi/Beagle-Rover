@@ -166,15 +166,17 @@ typedef struct core_state_t{
 ************************************************************************/
 	const float HP_CONST = THETA_MIX_TC/(THETA_MIX_TC + DT);
 	const float LP_CONST = DT/(THETA_MIX_TC + DT);
-	int xAccel, yAccel, zAccel;
-	float accLP, accLP_pitch;
-	float yGyro, xGyro, gyroHP;
-	float theta;
 	unsigned short gyro_fsr; //full scale range of gyro
 	float gyro_to_rad_per_sec;
 	mpudata_t mpu; //struct to read IMU data into 
 	// Filter Initialization sampling
 	float sum_ax, sum_ay, sum_az, sum_gx, sum_gy;
+typedef struct comp_filter_t{
+	int xAccel, yAccel, zAccel;
+	float accLP_LD, accLP_RD, accLP_NU, accLP_ND;
+	float yGyro, xGyro, gyroHP;
+	float theta, theta_LD, theta_RD, theta_NU, theta_ND;
+} comp_filter_t;
 
 /************************************************************************
 * 	user_interface_t
@@ -235,6 +237,7 @@ drive_config_t config;
 core_state_t cstate;
 user_interface_t user_interface;
 core_setpoint_t setpoint;
+comp_filter_t cfilter;
 
 
 /***********************************************************************
@@ -298,8 +301,8 @@ int main(){
 	}
 	
 	// Finally start the real-time interrupt driven control thread
-	// start IMU with equilibrium set with upright orientation 
-	// for Rover with Ethernet pointing relatively up
+	// start IMU with equilibrium set with FLAT orientation 
+	
 	signed char imu_orientation[9] = ORIENTATION_FLAT;		
 	if(initialize_imu(IMU_SAMPLE_RATE_HZ, imu_orientation)){
 		// can't talk to IMU, all hope is lost
@@ -848,52 +851,60 @@ int balance_core(){
 	*	values based on orientation
 	************************************************************************/
 	//raw integer accelerometer and gyro values
-	xAccel = mpu.rawAccel[VEC3_X]; 										 // note DMP reverses x and Z
-	zAccel = mpu.rawAccel[VEC3_Z]; 
-	yAccel = mpu.rawAccel[VEC3_Y];
-	yGyro = -(mpu.rawGyro[VEC3_Y]);
-	xGyro = -(mpu.rawGyro[VEC3_X]);
-	accLP_pitch = atan2(zAccel,xAccel);										 // initialize accLP at current theta
-	theta = accLP;														 // initialize theta with accelerometer
+	cfilter.xAccel = mpu.rawAccel[VEC3_X]; 										 // note DMP reverses x and Z
+	cfilter.zAccel = mpu.rawAccel[VEC3_Z]; 
+	cfilter.yAccel = mpu.rawAccel[VEC3_Y];
+	cfilter.yGyro = -(mpu.rawGyro[VEC3_Y]);
+	cfilter.xGyro = -(mpu.rawGyro[VEC3_X]);
+															 // initialize theta with accelerometer
 	
 	switch(cstate.orientation){
-		case FLAT:
-		//Not much to do if flat!
+		case FLAT: {
+		// Not much to do if FLAT!
+		// initialize theta with accelerometer
+		cfilter.accLP_LD = atan2(cfilter.zAccel, cfilter.yAccel);
+		cfilter.theta_LD = cfilter.accLP_LD;
+		cfilter.accLP_RD = atan2(cfilter.zAccel, -cfilter.yAccel);
+		cfilter.theta_RD = cfilter.accLP_RD;
+		cfilter.accLP_NU = atan2(cfilter.zAccel, -cfilter.xAccel);
+		cfilter.theta_NU = cfilter.accLP_NU;
+		cfilter.accLP_ND = atan2(cfilter.zAccel, cfilter.xAccel);
+		cfilter.theta_ND = cfilter.accLP_ND; 
+		cfilter.gyroHP = 0;		// zero out gyro
+		cfilter.theta = 1.57;	// "zero" out theta
 		disarm_controller();
+		
 		break;
+		}
 		case LEFT_DOWN: {
-			accLP = atan2(zAccel,yAccel); 								 // initialize accLP at current theta
-			theta = accLP; 												 // initialize theta with accelerometer
-			accLP = accLP + LP_CONST * (atan2(zAccel,yAccel) - accLP); 	 // first order filter LEFT_DOWN
-			gyroHP = HP_CONST*(gyroHP + (DT*xGyro*gyro_to_rad_per_sec)); // gyroHP starts at zero
-			theta = gyroHP + accLP + config.theta_tilt_roll; // tilt angle of BBB at equilibrium about roll axis
+			cfilter.accLP_LD = cfilter.accLP_LD \
+							+ LP_CONST * (atan2(cfilter.zAccel,cfilter.yAccel) - cfilter.accLP_LD); 	 // first order filter LEFT_DOWN
+			cfilter.gyroHP = HP_CONST*(cfilter.gyroHP + (DT*cfilter.xGyro*gyro_to_rad_per_sec)); // cfilter.gyroHP starts at zero
+			cfilter.theta = cfilter.gyroHP + cfilter.accLP_LD + config.theta_tilt_roll; // tilt angle of BBB at equilibrium about roll axis
 			cstate.K = config.KD_roll;											 // constant to adjust gain
 			break;
 		}
 		case RIGHT_DOWN: {
-			accLP = atan2(zAccel,-yAccel);
-			theta = accLP;
-			accLP = accLP + LP_CONST * (atan2(zAccel,-yAccel) - accLP);  // first order filter RIGHT_DOWN
-			gyroHP = HP_CONST*(gyroHP + (DT*-xGyro*gyro_to_rad_per_sec));  
-			theta = gyroHP + accLP + config.theta_tilt_roll;					 
+			cfilter.accLP_RD = cfilter.accLP_RD \
+							+ LP_CONST * (atan2(cfilter.zAccel,-cfilter.yAccel) - cfilter.accLP_RD);  // first order filter RIGHT_DOWN
+			cfilter.gyroHP = HP_CONST*(cfilter.gyroHP + (DT*-cfilter.xGyro*gyro_to_rad_per_sec));  
+			cfilter.theta = cfilter.gyroHP + cfilter.accLP_RD + config.theta_tilt_roll;					 
 			cstate.K = config.KD_roll;		
 			break;
 		}
 		case NOSE_UP: {
-			/* accLP = atan2(zAccel, -xAccel);
-			theta = accLP; */
-			accLP = accLP + LP_CONST * (atan2(zAccel,-xAccel) - accLP);  // first order filter NOSE_UP
-			gyroHP = HP_CONST*(gyroHP + (DT*yGyro*gyro_to_rad_per_sec));  
-			theta = gyroHP + accLP + config.theta_tilt_pitch;			 
+			cfilter.accLP_NU = cfilter.accLP_NU 
+							+ LP_CONST * (atan2(cfilter.zAccel,-cfilter.xAccel) - cfilter.accLP_NU);  // first order filter NOSE_UP
+			cfilter.gyroHP = HP_CONST*(cfilter.gyroHP + (DT*cfilter.yGyro*gyro_to_rad_per_sec));  
+			cfilter.theta = cfilter.gyroHP + cfilter.accLP_NU + config.theta_tilt_pitch;			 
 			cstate.K = config.KD_pitch;	
 			break;
 		}
 		case NOSE_DOWN: {
-			accLP = atan2(zAccel, xAccel);
-			theta = accLP;
-			accLP = accLP + LP_CONST * (atan2(zAccel,xAccel) - accLP); 	 // first order filter NOSE_DOWN
-			gyroHP = HP_CONST*(gyroHP + (DT*-yGyro*gyro_to_rad_per_sec));  
-			theta = gyroHP + accLP + config.theta_tilt_pitch;					 
+			cfilter.accLP_ND = cfilter.accLP_ND \
+							+ LP_CONST * (atan2(cfilter.zAccel,cfilter.xAccel) - cfilter.accLP_ND); 	 // first order filter NOSE_DOWN
+			cfilter.gyroHP = HP_CONST*(cfilter.gyroHP + (DT*-cfilter.yGyro*gyro_to_rad_per_sec));  
+			cfilter.theta = cfilter.gyroHP + cfilter.accLP_ND + config.theta_tilt_pitch;					 
 			cstate.K = config.KD_pitch;	
 			break;
 		}
@@ -907,7 +918,7 @@ int balance_core(){
 	// angle theta is negative in the direction of forward tip (BBB facing away from user)
 	// add mounting angle of BBB (theta_offset)
 	cstate.theta[2] = cstate.theta[1]; cstate.theta[1] = cstate.theta[0];
-	cstate.theta[0] = theta;  		  
+	cstate.theta[0] = cfilter.theta;  		  
 	cstate.current_theta = cstate.theta[0]; 
 	
 	// body turning estimation
@@ -1262,7 +1273,7 @@ void* printf_loop(void* ptr){
 		// check if this is the first time since being paused
 		if(new_state==RUNNING && last_state!=RUNNING){
 			printf("\nRUNNING: Hold upright to balance.\n");
-			printf(" theta t_ref d_split  drive_stick   u    \n");
+			printf(" theta t_ref d_split  drive_stick   u   orientation \n");
 		}
 		else if(new_state==PAUSED && last_state!=PAUSED){
 			printf("\nPAUSED: press pause again to start.\n");
@@ -1279,6 +1290,7 @@ void* printf_loop(void* ptr){
 			printf(" %0.9f ", user_interface.drive_stick);
 			//printf(" %0.2f ", cstate.current_gamma);
 			printf(" %0.2f ", cstate.current_u);
+			print_orientation(cstate.orientation);
 			
 			if(user_interface.input_mode == DSM2)
 				printf(" DSM2 ");
