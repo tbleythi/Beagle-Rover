@@ -897,7 +897,6 @@ int balance_core(){
 		cfilter.theta_ND = cfilter.accLP_ND; 
 		cfilter.gyroHP = 0;		// zero out gyro
 		cfilter.theta = 1.57;	// "zero" out theta
-		//disarm_controller();
 		
 		break;
 		}
@@ -1008,7 +1007,7 @@ int balance_core(){
 		if(saturate_number_limit(&cstate.u[0], config.v_nominal/cstate.vBatt)){
 			Dz_saturation_counter ++;
 			if(Dz_saturation_counter > IMU_SAMPLE_RATE_HZ/4){
-				printf("inner loop controller saturated\n");
+				//printf("inner loop controller saturated\n");
 				disarm_controller();
 				Dz_saturation_counter = 0;
 				break;
