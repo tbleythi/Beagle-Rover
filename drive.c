@@ -404,7 +404,7 @@ void* drive_stack(void* ptr){
 				case NORMAL_4W:		// Normal 4W Steering
 				net_drive = user_interface.drive_stick*config.motor_max;
 				net_torque_split = user_interface.turn_stick*config.torque_vec_const*net_drive;
-				net_turn = user_interface.turn_stick*config.normal_turn_range;	//negative left, positive right
+				net_turn = user_interface.turn_stick*config.normal_turn_range_straight;	//negative left, positive right
 				if(net_turn<0.001 && net_turn>-0.001){
 					net_turn = 0.001;
 				}
@@ -431,7 +431,32 @@ void* drive_stack(void* ptr){
 				
 				// crab, turn all wheels sideways and drive
 				case CRAB:
-					net_drive = user_interface.drive_stick*config.motor_max;
+				net_drive = user_interface.drive_stick*config.motor_max;
+				net_torque_split = user_interface.turn_stick*config.torque_vec_const*net_drive;
+				net_turn = user_interface.turn_stick*config.normal_turn_range_crab;	//negative left, positive right
+				if(net_turn<0.001 && net_turn>-0.001){		// avoid singularity at R=0
+					net_turn = 0.001;
+				}
+				net_turn_rad = (config.servo_range_rad - (1-fabsf(net_turn))*config.servo_range_rad);	//convert to radians 
+				R = config.track_width_over2/tanf(net_turn_rad) + config.wheelbase_over2;		//R=distance from center of wheelbase to center of curvature
+				net_turn_outer = atanf(config.track_width_over2/(R+config.wheelbase_over2))/config.servo_range_rad;	//turn angle of outer wheel normalized
+				cstate.motors[0]=(net_drive+net_torque_split)*config.mot1_polarity;
+				cstate.motors[1]=-(net_drive+net_torque_split)*config.mot2_polarity;
+				cstate.motors[2]=(net_drive-net_torque_split)*config.mot3_polarity;
+				cstate.motors[3]=-(net_drive-net_torque_split)*config.mot4_polarity;
+				if(net_turn<0.0){
+					cstate.servos[0]=config.serv1_center+config.turn_crab+0.01-net_turn;
+					cstate.servos[1]=config.serv2_center-config.turn_crab+net_turn;
+					cstate.servos[2]=config.serv3_center+config.turn_crab-0.01-net_turn_outer;
+					cstate.servos[3]=config.serv4_center-config.turn_crab-0.02+net_turn_outer;
+				}
+				else {
+					cstate.servos[0]=config.serv1_center+config.turn_crab+0.01-net_turn_outer;
+					cstate.servos[1]=config.serv2_center-config.turn_crab+net_turn_outer;
+					cstate.servos[2]=config.serv3_center+config.turn_crab-0.01+net_turn;
+					cstate.servos[3]=config.serv4_center-config.turn_crab-0.02-net_turn;
+				}
+					/* net_drive = user_interface.drive_stick*config.motor_max;
 					net_turn = user_interface.turn_stick;
 					cstate.motors[0]=(net_drive+net_turn)*config.mot1_polarity;
 					cstate.motors[1]=-(net_drive+net_turn)*config.mot2_polarity;
@@ -440,7 +465,7 @@ void* drive_stack(void* ptr){
 					cstate.servos[0]=config.serv1_center+config.turn_crab+0.01;
 					cstate.servos[1]=config.serv2_center-config.turn_crab;
 					cstate.servos[2]=config.serv3_center+config.turn_crab-0.01;
-					cstate.servos[3]=config.serv4_center-config.turn_crab-0.02;
+					cstate.servos[3]=config.serv4_center-config.turn_crab-0.02; */
 					break;
 					
 				case SPIN:
@@ -872,7 +897,7 @@ int balance_core(){
 		cfilter.theta_ND = cfilter.accLP_ND; 
 		cfilter.gyroHP = 0;		// zero out gyro
 		cfilter.theta = 1.57;	// "zero" out theta
-		disarm_controller();
+		//disarm_controller();
 		
 		break;
 		}
