@@ -192,7 +192,8 @@ typedef struct user_interface_t{
 	// All sticks scaled from -1 to 1
 	float drive_stick; 	// positive forward
 	float turn_stick;	// positive to the right, CW yaw
-	float kill_switch
+	float throttle_stick;	// positive forward
+	float kill_switch;
 }user_interface_t;
 
 // set with microsSinceEpoch() when the core starts
@@ -1299,7 +1300,7 @@ void* printf_loop(void* ptr){
 		// check if this is the first time since being paused
 		if(new_state==RUNNING && last_state!=RUNNING){
 			printf("\nRUNNING: Hold upright to balance.\n");
-			printf(" theta t_ref d_split  drive_stick   u   orientation \n");
+			printf(" theta t_ref d_split  d_stick   thr   u    orient   arm_state \n");
 		}
 		else if(new_state==PAUSED && last_state!=PAUSED){
 			printf("\nPAUSED: press pause again to start.\n");
@@ -1313,7 +1314,8 @@ void* printf_loop(void* ptr){
 			printf(" %0.2f ", cstate.current_theta);
 			printf(" %0.2f ", setpoint.theta);
 			printf(" %0.2f ", cstate.duty_split);
-			printf(" %0.9f ", user_interface.drive_stick);
+			printf(" %0.2f ", user_interface.drive_stick);
+			printf(" %0.2f ", user_interface.throttle_stick);
 			//printf(" %0.2f ", cstate.current_gamma);
 			printf(" %0.2f ", cstate.current_u);
 			print_orientation(cstate.orientation);
@@ -1324,10 +1326,10 @@ void* printf_loop(void* ptr){
 				printf("NONE");
 			printf("   ");
 			
-			/* if(setpoint.core_mode == ANGLE)
+			if(setpoint.core_mode == ANGLE)
 				printf(" ANGLE ");
 			
-			printf("   "); */
+			printf("   "); 
 			
 			if(setpoint.arm_state == ARMED)
 				printf(" ARMED ");
@@ -1498,6 +1500,7 @@ void* dsm2_watcher(void* ptr){
 				user_interface.input_mode = DSM2;
 				user_interface.drive_stick = drive;
 				user_interface.turn_stick  = turn;
+				user_interface.throttle_stick  = throttle;
 				user_interface.drive_mode = temp_drive_mode;
 			}
 			
