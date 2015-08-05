@@ -62,7 +62,8 @@ either expressed or implied, of the FreeBSD Project.
 *
 ************************************************************************/
 typedef enum core_mode_t{  
-	ANGLE
+	ANGLE,
+	DRIVE
 }core_mode_t;
 
 /************************************************************************
@@ -191,6 +192,7 @@ typedef struct user_interface_t{
 	// All sticks scaled from -1 to 1
 	float drive_stick; 	// positive forward
 	float turn_stick;	// positive to the right, CW yaw
+	float kill_switch
 }user_interface_t;
 
 // set with microsSinceEpoch() when the core starts
@@ -1454,7 +1456,7 @@ void* dsm2_watcher(void* ptr){
 	const int check_us = 5000; // dsm2 packets come in at 11ms, check faster
 	drive_mode_t temp_drive_mode; // new drive mode selected by user switches
 	int missed_frames;
-	float turn, drive, switch1, switch2;
+	float turn, drive, throttle, switch1, switch2;
 	
 	while(get_state()!=EXITING){
 		if(is_new_dsm2_data()){	
@@ -1465,6 +1467,8 @@ void* dsm2_watcher(void* ptr){
 					get_dsm2_ch_normalized(config.dsm2_turn_ch);
 			drive = config.dsm2_drive_polarity * \
 					get_dsm2_ch_normalized(config.dsm2_drive_ch);
+			throttle = config.dsm2_throttle_polarity * \
+					get_dsm2_ch_normalized(config.dsm2_throttle_ch);
 			switch1 = config.dsm2_switch1_polarity * \
 					get_dsm2_ch_normalized(config.dsm2_switch1_ch);
 			switch2 = config.dsm2_switch2_polarity * \
