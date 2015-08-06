@@ -218,8 +218,8 @@ void* orientation_detector(void* ptr);
 int main();
 int balance_core();
 int wait_for_starting_condition();
-int saturate_number(float* val, float min, float max);		////////////////////////////added this
-int saturate_number_limit(float* val, float limit);			////////////////////////////added this
+int saturate_number(float* val, float min, float max);		
+int saturate_number_limit(float* val, float limit);			
 int on_pause_press();
 int print_drive_mode(drive_mode_t mode);
 int on_mode_release();
@@ -459,16 +459,6 @@ void* drive_stack(void* ptr){
 					cstate.servos[2]=config.serv3_center+config.turn_crab-0.01+net_turn;
 					cstate.servos[3]=config.serv4_center-config.turn_crab-0.02-net_turn;
 				}
-					/* net_drive = user_interface.drive_stick*config.motor_max;
-					net_turn = user_interface.turn_stick;
-					cstate.motors[0]=(net_drive+net_turn)*config.mot1_polarity;
-					cstate.motors[1]=-(net_drive+net_turn)*config.mot2_polarity;
-					cstate.motors[2]=-(net_drive-net_turn)*config.mot3_polarity;
-					cstate.motors[3]=(net_drive-net_turn)*config.mot4_polarity;
-					cstate.servos[0]=config.serv1_center+config.turn_crab+0.01;
-					cstate.servos[1]=config.serv2_center-config.turn_crab;
-					cstate.servos[2]=config.serv3_center+config.turn_crab-0.01;
-					cstate.servos[3]=config.serv4_center-config.turn_crab-0.02; */
 					break;
 					
 				case SPIN:
@@ -775,7 +765,7 @@ void* balance_stack(void* ptr){
 	usleep(1000000);
 	usleep(500000);
 	set_state(RUNNING);
-	setpoint.core_mode = ANGLE;
+	setpoint.core_mode = ANGLE;		// start in balance mode
 	setRED(LOW);
 	setGRN(HIGH);
 	
@@ -985,6 +975,7 @@ int balance_core(){
 			return 0;
 		}
 		
+		if(setpoint.core_mode==ANGLE){
 		// check for a tip over before anything else
 		if(fabs(cstate.current_theta)>config.tip_angle){	
 			disarm_controller();
@@ -1024,6 +1015,7 @@ int balance_core(){
 		// scale output to compensate for battery charge level
 		compensated_Dz_output = cstate.u[0] \
 				* (config.v_nominal / cstate.vBatt);
+		}		// end if statement for calculating balance controller
 		
 		//steering controller
 		// move the controller set points based on user input
@@ -1035,19 +1027,27 @@ int balance_core(){
 		
 		// if the steering input would saturate a motor, reduce			
 		// the steering input to prevent compromising balance input
-		if(fabs(compensated_Dz_output)+fabs(cstate.duty_split) > 1){
+		/* if(fabs(compensated_Dz_output)+fabs(cstate.duty_split) > 1){	//////////////////////////////////
 			if(cstate.duty_split > 0){
 				cstate.duty_split = 1-fabs(compensated_Dz_output);
 			}
 			else cstate.duty_split = -(1-fabs(compensated_Dz_output));
-		}	
+		} */	 
+		
+		if(user_interface.throttle_stick > 0){	// cease to calculate balance controller
+		setpoint.core_mode = DRIVE;
+		compensated_Dz_output = 0;
+		}
+		if(user_interface.throttle_stick < 0){	// calculate balance controller again
+		setpoint.core_mode = ANGLE;
+		}
 		
 		// add Dz balance controller and steering control
 		dutyL  = compensated_Dz_output + cstate.duty_split; 
 		dutyR = compensated_Dz_output - cstate.duty_split;	
 		
 		// send to motors
-		// one motor is flipped on chassis so reverse duty to L	include /////////if statement here for which orient.
+		// one motor is flipped on chassis so reverse duty to L	include  
 		if(cstate.orientation == LEFT_DOWN){
 			set_motor(4,-dutyL); 				
 			set_motor(1,dutyR);
