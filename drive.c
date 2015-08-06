@@ -448,15 +448,15 @@ void* drive_stack(void* ptr){
 				cstate.motors[2]=(net_drive-net_torque_split)*config.mot3_polarity;
 				cstate.motors[3]=-(net_drive-net_torque_split)*config.mot4_polarity;
 				if(net_turn<0.0){
-					cstate.servos[0]=config.serv1_center+config.turn_crab+0.01-net_turn;
-					cstate.servos[1]=config.serv2_center-config.turn_crab+net_turn;
-					cstate.servos[2]=config.serv3_center+config.turn_crab-0.01-net_turn_outer;
+					cstate.servos[0]=config.serv1_center+config.turn_crab+0.02-net_turn;
+					cstate.servos[1]=config.serv2_center-config.turn_crab+0.01+net_turn;
+					cstate.servos[2]=config.serv3_center+config.turn_crab-0.03-net_turn_outer;
 					cstate.servos[3]=config.serv4_center-config.turn_crab-0.02+net_turn_outer;
 				}
 				else {
-					cstate.servos[0]=config.serv1_center+config.turn_crab+0.01-net_turn_outer;
-					cstate.servos[1]=config.serv2_center-config.turn_crab+net_turn_outer;
-					cstate.servos[2]=config.serv3_center+config.turn_crab-0.01+net_turn;
+					cstate.servos[0]=config.serv1_center+config.turn_crab+0.02-net_turn_outer;
+					cstate.servos[1]=config.serv2_center-config.turn_crab+0.01+net_turn_outer;
+					cstate.servos[2]=config.serv3_center+config.turn_crab-0.03+net_turn;
 					cstate.servos[3]=config.serv4_center-config.turn_crab-0.02-net_turn;
 				}
 					break;
@@ -1023,16 +1023,16 @@ int balance_core(){
 		cstate.egamma[1] = cstate.egamma[0];
 		cstate.egamma[0] = setpoint.gamma - cstate.current_gamma;
 		//cstate.duty_split = config.KP_steer*(cstate.egamma[0] + config.KD_steer*(cstate.egamma[0]-cstate.egamma[1]));
-		cstate.duty_split = user_interface.turn_stick;
+		cstate.duty_split = -user_interface.turn_stick;
 		
 		// if the steering input would saturate a motor, reduce			
 		// the steering input to prevent compromising balance input
-		/* if(fabs(compensated_Dz_output)+fabs(cstate.duty_split) > 1){	//////////////////////////////////
+		if(fabs(compensated_Dz_output)+fabs(cstate.duty_split) > 1){	
 			if(cstate.duty_split > 0){
 				cstate.duty_split = 1-fabs(compensated_Dz_output);
 			}
 			else cstate.duty_split = -(1-fabs(compensated_Dz_output));
-		} */	 
+		}  
 		
 		if(user_interface.throttle_stick > 0){	// cease to calculate balance controller
 		setpoint.core_mode = DRIVE;
