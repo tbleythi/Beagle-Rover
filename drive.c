@@ -246,7 +246,7 @@ comp_filter_t cfilter;
 /***********************************************************************
 *	main()
 *	start all the threads, and wait till something 
-*	triggers a shut down
+*	triggers a shut down (sleep unless exiting)
 ***********************************************************************/
 int main(){
 	// initialize cape hardware
@@ -347,7 +347,7 @@ int main(){
 }
 
 /***********************************************************************
-*	drive_stack
+*	drive_stack run at 50Hz
 *	This is the medium between the user_interface struct and the 
 *	physical servos and motors
 ************************************************************************/
@@ -635,7 +635,7 @@ int print_orientation(orientation_t orient){
 }
 
 /************************************************************************
-* 	void* orientation_detector(void* ptr)
+* 	void* orientation_detector(void* ptr) run at 50Hz
 *	independent thread that monitors the imu data and determines
 *	a possible orientation quickly and a definite orientation more 
 * 	slowly with more certainty. 
@@ -751,7 +751,7 @@ void* orientation_detector(void* ptr){
 }
 
 /***********************************************************************
-*	balance_stack
+*	balance_stack run at 200Hz
 *	This is the medium between the user_interface and setpoint structs.
 *	dsm2, bluetooth, and mavlink threads may be unreliable and shouldn't
 *	touch the controller setpoint directly. balance_stack and balance_core
@@ -815,8 +815,8 @@ void* balance_stack(void* ptr){
 			if(setpoint.core_mode == ANGLE){
 				// in angle mode, scale user input from -1 to 1 to
 				// the minimum and maximum theta reference angles
-				//setpoint.theta = 1.57 + config.theta_ref_max*(saturate_number_limit(&user_interface.drive_stick,1));
-				setpoint.theta = -user_interface.drive_stick;
+				//setpoint.theta = config.theta_ref_max*(saturate_number_limit(&user_interface.drive_stick,1));
+				setpoint.theta = -user_interface.drive_stick*.5;	// damp out drive_stick so easy to drive 
 					if(setpoint.theta >= config.theta_ref_max){
 						setpoint.theta = config.theta_ref_max;
 					}
@@ -842,7 +842,7 @@ void* balance_stack(void* ptr){
 }
 
 /************************************************************************
-* 	int balance_core()
+* 	int balance_core() (IMU interrupt function run at 200Hz)
 ************************************************************************/
 int balance_core(){
 	// local variables only in memory scope of balance_core
@@ -889,7 +889,7 @@ int balance_core(){
 		cfilter.accLP_ND = atan2(cfilter.zAccel, cfilter.xAccel);
 		cfilter.theta_ND = cfilter.accLP_ND; 
 		cfilter.gyroHP = 0;		// zero out gyro
-		cfilter.theta = 1.57;	// "zero" out theta
+		cfilter.theta = 1.57;	// "zero" out theta (theta=1.57 when flat)
 		
 		break;
 		}
@@ -944,7 +944,7 @@ int balance_core(){
 	cstate.d_gamma = (cstate.gamma[0]-cstate.gamma[1])/DT;
 	cstate.current_gamma = cstate.gamma[0];
 	
-		/***********************************************************************
+	/***********************************************************************
 	*	Control based on the robotics_library defined state variable
 	*	PAUSED: make sure the controller stays DISARMED
 	*	RUNNING: Normal operation of controller.
@@ -1023,7 +1023,7 @@ int balance_core(){
 		cstate.egamma[1] = cstate.egamma[0];
 		cstate.egamma[0] = setpoint.gamma - cstate.current_gamma;
 		//cstate.duty_split = config.KP_steer*(cstate.egamma[0] + config.KD_steer*(cstate.egamma[0]-cstate.egamma[1]));
-		cstate.duty_split = -user_interface.turn_stick;
+		cstate.duty_split = -user_interface.turn_stick*.5;
 		
 		// if the steering input would saturate a motor, reduce			
 		// the steering input to prevent compromising balance input
@@ -1197,7 +1197,7 @@ int wait_for_starting_condition(){
 }
 
 /***********************************************************************
-*	battery_checker()
+*	battery_checker() run every 3 seconds
 *	super slow loop checking battery voltage
 ************************************************************************/
 void* battery_checker(void* ptr){
@@ -1289,7 +1289,7 @@ void* battery_checker(void* ptr){
 } */  
 
 /***********************************************************************
-*	printf_loop() 
+*	printf_loop() run at 5 Hz
 *	prints diagnostics to console
 *   this only gets started if executing from terminal
 ************************************************************************/
@@ -1450,7 +1450,7 @@ int blink_red(){
 
 
 /***********************************************************************
-*	dsm2_watcher()
+*	dsm2_watcher() run at 200Hz
 *	listen for RC control for driving around
 ***********************************************************************/
 void* dsm2_watcher(void* ptr){
